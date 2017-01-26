@@ -22,6 +22,7 @@ fn real_main() -> i32 {
     let mut archive = zip::ZipArchive::new(file).unwrap();
 
     for i in 0..archive.len() {
+        let file = fs::File::open(&fname).unwrap();
         let mut file = archive.by_index(file, i).unwrap();
         let outpath = sanitize_filename(file.name());
         println!("{}", outpath.display());

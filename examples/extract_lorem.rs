@@ -13,11 +13,11 @@ fn real_main() -> i32 {
         return 1;
     }
     let fname = std::path::Path::new(&*args[1]);
-    let zipfile = std::fs::File::open(&fname).unwrap();
+    let mut zipfile = std::fs::File::open(&fname).unwrap();
 
-    let mut archive = zip::ZipArchive::new(zipfile).unwrap();
+    let mut archive = zip::ZipArchive::new(&mut zipfile).unwrap();
 
-    let mut file = match archive.by_name("test/lorem_ipsum.txt") {
+    let mut file = match archive.by_name(zipfile, "test/lorem_ipsum.txt") {
         Ok(file) => file,
         Err(..) => {
             println!("File test/lorem_ipsum.txt not found");

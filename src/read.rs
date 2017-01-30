@@ -31,14 +31,15 @@ mod ffi {
 ///
 ///     // For demonstration purposes we read from an empty buffer.
 ///     // Normally a File object would be used.
-///     let buf: &[u8] = &[0u8; 128];
-///     let mut reader = std::io::Cursor::new(buf);
+///     let buf: Vec<u8> = Vec::new();
+///     let reader = &mut std::io::Cursor::new(&buf);
 ///
 ///     let mut zip = try!(zip::ZipArchive::new(reader));
 ///
 ///     for i in 0..zip.len()
 ///     {
-///         let mut file = zip.by_index(i).unwrap();
+///         let reader = std::io::Cursor::new(buf.clone());
+///         let mut file = zip.by_index(reader, i).unwrap();
 ///         println!("Filename: {}", file.name());
 ///         let first_byte = try!(file.bytes().next().unwrap());
 ///         println!("{}", first_byte);
@@ -49,32 +50,31 @@ mod ffi {
 /// println!("Result: {:?}", doit());
 /// ```
 #[derive(Debug)]
-pub struct ZipArchive<R: Read + io::Seek> {
-    reader: R,
+pub struct ZipArchive {
     files: Vec<ZipFileData>,
     names_map: HashMap<String, usize>,
 }
 
-enum ZipFileReader<'a> {
-    Stored(Crc32Reader<io::Take<&'a mut Read>>),
-    Deflated(Crc32Reader<flate2::read::DeflateDecoder<io::Take<&'a mut Read>>>),
+enum ZipFileReader {
+    Stored(Crc32Reader<io::Take<Box<Read>>>),
+    Deflated(Crc32Reader<flate2::read::DeflateDecoder<io::Take<Box<Read>>>>),
     #[cfg(feature = "bzip2")]
-    Bzip2(Crc32Reader<BzDecoder<io::Take<&'a mut Read>>>),
+    Bzip2(Crc32Reader<BzDecoder<io::Take<Box<Read>>>>),
 }
 
 /// A struct for reading a zip file
-pub struct ZipFile<'a> {
-    data: &'a ZipFileData,
-    reader: ZipFileReader<'a>,
+pub struct ZipFile {
+    data: ZipFileData,
+    reader: ZipFileReader,
 }
 
 fn unsupported_zip_error<T>(detail: &'static str) -> ZipResult<T> {
     Err(ZipError::UnsupportedArchive(detail))
 }
 
-impl<R: Read + io::Seek> ZipArchive<R> {
+impl ZipArchive {
     /// Opens a Zip archive and parses the central directory
-    pub fn new(mut reader: R) -> ZipResult<ZipArchive<R>> {
+    pub fn new<R: Read + Seek>(mut reader: &mut R) -> ZipResult<ZipArchive> {
         let footer = try!(spec::CentralDirectoryEnd::find_and_parse(&mut reader));
 
         if footer.disk_number != footer.disk_with_central_directory {
@@ -95,7 +95,6 @@ impl<R: Read + io::Seek> ZipArchive<R> {
         }
 
         Ok(ZipArchive {
-            reader: reader,
             files: files,
             names_map: names_map,
         })
@@ -105,10 +104,12 @@ impl<R: Read + io::Seek> ZipArchive<R> {
     ///
     /// ```
     /// fn iter() {
-    ///     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(vec![])).unwrap();
+    ///     let reader = &mut std::io::Cursor::new(vec![]);
+    ///     let mut zip = zip::ZipArchive::new(reader).unwrap();
     ///
     ///     for i in 0..zip.len() {
-    ///         let mut file = zip.by_index(i).unwrap();
+    ///         let mut reader = std::io::Cursor::new(vec![]);
+    ///         let mut file = zip.by_index(reader, i).unwrap();
     ///         // Do something with file i
     ///     }
     /// }
@@ -118,18 +119,24 @@ impl<R: Read + io::Seek> ZipArchive<R> {
     }
 
     /// Search for a file entry by name
-    pub fn by_name<'a>(&'a mut self, name: &str) -> ZipResult<ZipFile<'a>> {
+    pub fn by_name<R: Read + Seek + 'static>(&mut self,
+                                             reader: R,
+                                             name: &str)
+                                             -> ZipResult<ZipFile> {
         let index = match self.names_map.get(name) {
             Some(index) => *index,
             None => {
                 return Err(ZipError::FileNotFound);
             }
         };
-        self.by_index(index)
+        self.by_index(reader, index)
     }
 
     /// Get a contained file by index
-    pub fn by_index<'a>(&'a mut self, file_number: usize) -> ZipResult<ZipFile<'a>> {
+    pub fn by_index<R: Read + Seek + 'static>(&mut self,
+                                              reader: R,
+                                              file_number: usize)
+                                              -> ZipResult<ZipFile> {
         if file_number >= self.files.len() {
             return Err(ZipError::FileNotFound);
         }
@@ -139,9 +146,10 @@ impl<R: Read + io::Seek> ZipArchive<R> {
         if data.encrypted {
             return unsupported_zip_error("Encrypted files are not supported");
         }
-
-        try!(self.reader.seek(io::SeekFrom::Start(pos)));
-        let limit_reader = (self.reader.by_ref() as &mut Read).take(data.compressed_size);
+        let mut reader = reader;
+        try!(reader.seek(io::SeekFrom::Start(pos)));
+        let reader: Box<Read> = Box::new(reader);
+        let limit_reader = reader.take(data.compressed_size);
 
         let reader = match data.compression_method {
             CompressionMethod::Stored => {
@@ -160,16 +168,16 @@ impl<R: Read + io::Seek> ZipArchive<R> {
         };
         Ok(ZipFile {
             reader: reader,
-            data: data,
+            data: data.clone(),
         })
     }
-
-    /// Unwrap and return the inner reader object
-    ///
-    /// The position of the reader is undefined.
-    pub fn into_inner(self) -> R {
-        self.reader
-    }
+    // Unwrap and return the inner reader object
+    //
+    // The position of the reader is undefined.
+    // pub fn into_inner(self) -> R {
+    // self.reader
+    // }
+    //
 }
 
 fn central_header_to_zip_file<R: Read + io::Seek>(reader: &mut R) -> ZipResult<ZipFileData> {
@@ -266,7 +274,7 @@ fn parse_extra_field(_file: &mut ZipFileData, data: &[u8]) -> ZipResult<()> {
 }
 
 /// Methods for retreiving information on zip files
-impl<'a> ZipFile<'a> {
+impl ZipFile {
     fn get_reader(&mut self) -> &mut Read {
         match self.reader {
             ZipFileReader::Stored(ref mut r) => r as &mut Read,
@@ -329,7 +337,7 @@ impl<'a> ZipFile<'a> {
     }
 }
 
-impl<'a> Read for ZipFile<'a> {
+impl Read for ZipFile {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.get_reader().read(buf)
     }

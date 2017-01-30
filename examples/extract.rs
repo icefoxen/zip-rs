@@ -17,12 +17,13 @@ fn real_main() -> i32 {
         return 1;
     }
     let fname = std::path::Path::new(&*args[1]);
-    let file = fs::File::open(&fname).unwrap();
+    let file = &mut fs::File::open(&fname).unwrap();
 
     let mut archive = zip::ZipArchive::new(file).unwrap();
 
     for i in 0..archive.len() {
-        let mut file = archive.by_index(i).unwrap();
+        let file = fs::File::open(&fname).unwrap();
+        let mut file = archive.by_index(file, i).unwrap();
         let outpath = sanitize_filename(file.name());
         println!("{}", outpath.display());
 
